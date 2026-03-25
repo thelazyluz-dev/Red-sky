@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>שומר שמיים — Sky Shield</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      background: #000;
+      overflow: hidden;
+      font-family: 'Segoe UI', 'Arial Hebrew', Arial, sans-serif;
+    }
+
+    #gameCanvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+    }
+
+    /* HUD overlay — positioned with CSS, drawn on canvas too */
+    #hud {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="gameCanvas"></canvas>
+
+  <script>
+    // ─── Canvas Setup ───────────────────────────────────────────────────────────
+    const canvas = document.getElementById('gameCanvas');
+    const ctx    = canvas.getContext('2d');
+
+    function resize() {
+      canvas.width  = window.innerWidth;
+      canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', () => { resize(); render(); });
+    resize();
+
+    // ─── Constants ──────────────────────────────────────────────────────────────
+    const GROUND_H   = 80;   // px — ground strip height
+    const BATTERY_W  = 64;   // px — launcher base width
+    const BATTERY_H  = 44;   // px — launcher base height
+
+    // ─── Game State (Phase A — static/seed data only) ───────────────────────────
+    const state = {
+      wave:          1,
+      score:         0,
+      energy:        20,
+      maxEnergy:     20,
+      selectedSystem: 0,     // index 0-3
+      phase:         'playing',
+
+      cities: [],            // populated in init()
+      threats: [],
+      interceptors: [],
+      explosions: [],
+      systems: [],
+    };
+
+    // ─── Defence Systems Definition ─────────────────────────────────────────────
+    function makeSystems(W, H) {
+      const groundY = H - GROUND_H;
+      // Batteries sit on the ground, spaced from right edge
+      const gap   = 18;
+      const startX = W - gap - BATTERY_W;
+
+      return [
+        {
+          name:        'כיפת ברזל',
+          nameEn:      'Iron Dome',
+          range:       0.33,        // fraction of canvas height (low altitude)
+          reloadTime:  0.8,
+          currentReload: 0,
+          energyCost:  1,
+          level:       'low',
+          color:       '#00e5ff',
+          active:      true,
+          x:           startX - 0 * (BATTERY_W + gap),
+          y:           groundY - BATTERY_H,
+          key:         '1',
+        },
+        {
+          name:        'קלע דוד',
+          nameEn:      "David's Sling",
+          range:       0.66,
+          reloadTime:  2,
+          currentReload: 0,
+          energyCost:  3,
+          level:       'mid',
+          color:       '#76ff03',
+          active:      false,
+          x:           startX - 1 * (BATTERY_W + gap),
+          y:           groundY - BATTERY_H,
+          key:         '2',
+        },
+        {
+          name:        'חץ 2',
+          nameEn:      'Arrow 2',
+          range:       1.0,
+          reloadTime:  4,
+          currentReload: 0,
+          energyCost:  5,
+          level:       'high',
+          color:       '#ff9100',
+          active:      false,
+          x:           startX - 2 * (BATTERY_W + gap),
+          y:           groundY - BATTERY_H,
+          key:         '3',
+        },
+        {
+          name:        'חץ 3',
+          nameEn:      'Arrow 3',
+          range:       1.0,
+          reloadTime:  6,
+          currentReload: 0,
+          energyCost:  8,
+          level:       'ballistic',
+          color:       '#e040fb',
+          active:      false,
+          x:           startX - 3 * (BATTERY_W + gap),
+          y:           groundY - BATTERY_H,
+          key:         '4',
+        },
+      ];
+    }
+
+    // ─── Cities Definition ───────────────────────────────────────────────────────
+    function makeCities(W, H) {
+      const groundY = H - GROUND_H;
+      const names   = ['תל אביב', 'ירושלים', 'חיפה'];
+      const cityW   = 110;
+      const totalCitiesW = names.length * cityW + (names.length - 1) * 60;
+      const startX  = (W - totalCitiesW) / 2;
+
+      return names.map((name, i) => ({
+        name,
+        x:   startX + i * (cityW + 60),
+        y:   groundY - 2,        // sit on ground line
+        w:   cityW,
+        h:   52,
+        hp:  3,
+        maxHp: 3,
+        flashTimer: 0,
+      }));
+    }
+
+    // ─── Init ────────────────────────────────────────────────────────────────────
+    function init() {
+      state.systems = makeSystems(canvas.width, canvas.height);
+      state.cities  = makeCities(canvas.width, canvas.height);
+    }
+
+    // ─── Render Helpers ──────────────────────────────────────────────────────────
+
+    // Sky gradient — deep space at top, twilight blue at horizon
+    function drawSky() {
+      const { width: W, height: H } = canvas;
+      const grad = ctx.createLinearGradient(0, 0, 0, H - GROUND_H);
+      grad.addColorStop(0,    '#000510');
+      grad.addColorStop(0.35, '#030d2a');
+      grad.addColorStop(0.72, '#0a1a4a');
+      grad.addColorStop(1,    '#0d2b6b');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, W, H - GROUND_H);
+    }
+
+    // Stars
+    function drawStars(W, H) {
+      // Deterministic pseudo-random stars (seeded by position)
+      ctx.fillStyle = 'rgba(255,255,255,0.75)';
+      for (let i = 0; i < 180; i++) {
+        // lcg-style seed
+        const sx = ((i * 7919 + 1337) % W);
+        const sy = ((i * 6271 + 421)  % (H - GROUND_H - 40));
+        const r  = (i % 3 === 0) ? 1.2 : 0.7;
+        ctx.beginPath();
+        ctx.arc(sx, sy, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    // Height zone dashed lines & labels
+    function drawZones(W, H) {
+      const skyH   = H - GROUND_H;
+      const zones  = [
+        { frac: 0.33, label: 'גובה נמוך',   color: '#00e5ff' },
+        { frac: 0.66, label: 'גובה בינוני', color: '#76ff03' },
+      ];
+
+      zones.forEach(z => {
+        const y = skyH * (1 - z.frac);   // 0 = top; sky fraction from bottom
+        ctx.save();
+        ctx.strokeStyle = z.color + '50'; // semi-transparent
+        ctx.lineWidth   = 1;
+        ctx.setLineDash([8, 12]);
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(W, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Zone label — right-aligned (RTL)
+        ctx.fillStyle = z.color + '90';
+        ctx.font      = '11px Arial';
+        ctx.textAlign = 'right';
+        ctx.fillText(z.label, W - 8, y - 4);
+        ctx.restore();
+      });
+    }
+
+    // Ground strip + terrain
+    function drawGround(W, H) {
+      const groundY = H - GROUND_H;
+
+      // Base ground fill
+      const grad = ctx.createLinearGradient(0, groundY, 0, H);
+      grad.addColorStop(0, '#2e4a1e');
+      grad.addColorStop(0.4, '#1c3010');
+      grad.addColorStop(1,   '#0d1a07');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, groundY, W, GROUND_H);
+
+      // Ground top edge highlight
+      ctx.strokeStyle = '#4a7a28';
+      ctx.lineWidth   = 2;
+      ctx.beginPath();
+      ctx.moveTo(0, groundY);
+      ctx.lineTo(W, groundY);
+      ctx.stroke();
+    }
+
+    // Draw a single city building cluster
+    function drawCity(city) {
+      const { x, y, w, h, hp, maxHp, name, flashTimer } = city;
+
+      const flashing = flashTimer > 0;
+      const dmgRatio = hp / maxHp;
+
+      // Building body
+      const bldGrad = ctx.createLinearGradient(x, y - h, x, y);
+      if (flashing) {
+        bldGrad.addColorStop(0, '#ff3300');
+        bldGrad.addColorStop(1, '#880000');
+      } else {
+        bldGrad.addColorStop(0, dmgRatio > 0.66 ? '#4a6fa5' : (dmgRatio > 0.33 ? '#6b4a1a' : '#5a2a0a'));
+        bldGrad.addColorStop(1, '#1a2a3a');
+      }
+      ctx.fillStyle = bldGrad;
+      ctx.fillRect(x, y - h, w, h);
+
+      // Outline
+      ctx.strokeStyle = flashing ? '#ff6600' : '#2a3d55';
+      ctx.lineWidth   = 1.5;
+      ctx.strokeRect(x, y - h, w, h);
+
+      // Side buildings (shorter)
+      const sideW = 26, sideH = h * 0.65;
+      ctx.fillStyle = flashing ? '#cc2200' : (dmgRatio > 0.66 ? '#3a5a88' : '#4a3010');
+      ctx.fillRect(x - sideW - 3, y - sideH, sideW, sideH);
+      ctx.fillRect(x + w + 3,     y - sideH, sideW, sideH);
+      ctx.strokeStyle = flashing ? '#ff4400' : '#243040';
+      ctx.strokeRect(x - sideW - 3, y - sideH, sideW, sideH);
+      ctx.strokeRect(x + w + 3,     y - sideH, sideW, sideH);
+
+      // Windows — main building
+      drawWindows(x + 6,      y - h + 8, w - 12, h - 12, flashing);
+      // Windows — side buildings
+      drawWindows(x - sideW,  y - sideH + 6, sideW - 3, sideH - 10, flashing);
+      drawWindows(x + w + 6,  y - sideH + 6, sideW - 3, sideH - 10, flashing);
+
+      // City name label
+      ctx.fillStyle   = flashing ? '#ff8800' : '#a0b8d0';
+      ctx.font        = 'bold 12px Arial Hebrew, Arial';
+      ctx.textAlign   = 'center';
+      ctx.fillText(name, x + w / 2, y + 14);
+
+      // HP hearts
+      drawCityHP(x + w / 2, y + 28, hp, maxHp);
+    }
+
+    function drawWindows(bx, by, bw, bh, flashing) {
+      const cols = Math.max(2, Math.floor(bw / 14));
+      const rows = Math.max(2, Math.floor(bh / 14));
+      const winW = 7, winH = 7;
+      const padX = (bw - cols * winW) / (cols + 1);
+      const padY = (bh - rows * winH) / (rows + 1);
+
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const wx = bx + padX + c * (winW + padX);
+          const wy = by + padY + r * (winH + padY);
+          // Pseudo-random lit/unlit
+          const lit = ((r * 13 + c * 7) % 5) !== 0;
+          if (flashing) {
+            ctx.fillStyle = '#ff4400';
+          } else {
+            ctx.fillStyle = lit ? 'rgba(255,230,120,0.85)' : 'rgba(20,30,50,0.9)';
+          }
+          ctx.fillRect(wx, wy, winW, winH);
+        }
+      }
+    }
+
+    function drawCityHP(cx, cy, hp, maxHp) {
+      const heartSize = 10;
+      const spacing   = 14;
+      const totalW    = maxHp * spacing - (spacing - heartSize);
+      let startX = cx - totalW / 2;
+
+      for (let i = 0; i < maxHp; i++) {
+        const hx = startX + i * spacing;
+        drawHeart(hx, cy, heartSize, i < hp ? '#ff1744' : '#333');
+      }
+    }
+
+    function drawHeart(x, y, size, color) {
+      const s = size / 2;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(x + s, y + s * 0.4);
+      ctx.bezierCurveTo(x + s, y, x, y, x, y + s * 0.4);
+      ctx.bezierCurveTo(x, y + s * 1.1, x + s, y + s * 1.6, x + s, y + s * 1.8);
+      ctx.bezierCurveTo(x + s, y + s * 1.6, x + size, y + s * 1.1, x + size, y + s * 0.4);
+      ctx.bezierCurveTo(x + size, y, x + s, y, x + s, y + s * 0.4);
+      ctx.fill();
+    }
+
+    // Defence battery launcher visual
+    function drawSystem(sys, isSelected) {
+      const { x, y, name, color, key } = sys;
+      const bw = BATTERY_W;
+      const bh = BATTERY_H;
+
+      ctx.save();
+
+      // Glow when selected
+      if (isSelected) {
+        ctx.shadowColor = color;
+        ctx.shadowBlur  = 18;
+      }
+
+      // Base platform
+      const baseGrad = ctx.createLinearGradient(x, y, x, y + bh);
+      baseGrad.addColorStop(0, isSelected ? '#2a2a2a' : '#1a1a1a');
+      baseGrad.addColorStop(1, '#0a0a0a');
+      ctx.fillStyle = baseGrad;
+      ctx.beginPath();
+      ctx.roundRect(x, y + bh * 0.55, bw, bh * 0.45, [4, 4, 0, 0]);
+      ctx.fill();
+      ctx.strokeStyle = isSelected ? color : '#333';
+      ctx.lineWidth   = 1.5;
+      ctx.stroke();
+
+      // Launcher arm (rotated ~45° up-left)
+      const cx2 = x + bw / 2;
+      const cy2 = y + bh * 0.6;
+      const armLen = bh * 0.75;
+      const angle  = -Math.PI * 0.38; // point upper-left toward threats
+      ctx.strokeStyle = isSelected ? color : '#556';
+      ctx.lineWidth   = 5;
+      ctx.lineCap     = 'round';
+      ctx.beginPath();
+      ctx.moveTo(cx2, cy2);
+      ctx.lineTo(cx2 + Math.cos(angle) * armLen, cy2 + Math.sin(angle) * armLen);
+      ctx.stroke();
+
+      // Launcher tube tip marker
+      const tipX = cx2 + Math.cos(angle) * armLen;
+      const tipY = cy2 + Math.sin(angle) * armLen;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(tipX, tipY, 4, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Radar dish — small ellipse on top-right of base
+      ctx.strokeStyle = isSelected ? color : '#445';
+      ctx.lineWidth   = 1.5;
+      ctx.beginPath();
+      ctx.ellipse(x + bw * 0.78, y + bh * 0.52, 8, 5, -0.3, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(x + bw * 0.78, y + bh * 0.52);
+      ctx.lineTo(x + bw * 0.78, y + bh * 0.75);
+      ctx.stroke();
+
+      ctx.shadowBlur = 0;
+      ctx.restore();
+
+      // Key badge
+      ctx.fillStyle   = isSelected ? color : '#555';
+      ctx.font        = 'bold 11px Arial';
+      ctx.textAlign   = 'center';
+      ctx.fillText(`[${key}]`, x + bw / 2, y + bh + 13);
+
+      // System name (Hebrew) — below key badge
+      ctx.fillStyle = isSelected ? color : '#778';
+      ctx.font      = '10px Arial Hebrew, Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText(name, x + bw / 2, y + bh + 25);
+    }
+
+    // Reload bar inside the HUD panel below each battery
+    function drawReloadBars(systems) {
+      systems.forEach((sys, i) => {
+        const isSelected = i === state.selectedSystem;
+        const barW = BATTERY_W;
+        const barH = 4;
+        const bx   = sys.x;
+        const by   = sys.y + BATTERY_H + 30;
+
+        ctx.fillStyle = '#1a1a1a';
+        ctx.fillRect(bx, by, barW, barH);
+
+        const progress = sys.reloadTime > 0
+          ? 1 - (sys.currentReload / sys.reloadTime)
+          : 1;
+        ctx.fillStyle = isSelected ? sys.color : sys.color + '80';
+        ctx.fillRect(bx, by, barW * progress, barH);
+
+        ctx.strokeStyle = isSelected ? sys.color + 'aa' : '#333';
+        ctx.lineWidth   = 1;
+        ctx.strokeRect(bx, by, barW, barH);
+      });
+    }
+
+    // ─── HUD Panels ──────────────────────────────────────────────────────────────
+
+    function drawTopLeftHUD() {
+      const pad = 14;
+      const x   = pad;
+      const y   = pad;
+      const panW = 210;
+      const panH = 52;
+
+      // Background panel
+      drawPanel(x, y, panW, panH, 'rgba(0,8,20,0.82)', '#0d3a6e');
+
+      // Wave & Score
+      ctx.fillStyle = '#7eb8ff';
+      ctx.font      = 'bold 13px Arial Hebrew, Arial';
+      ctx.textAlign = 'right';
+      ctx.fillText('גל:', x + panW - pad, y + 20);
+      ctx.fillStyle = '#ffffff';
+      ctx.textAlign = 'left';
+      ctx.fillText(state.wave, x + panW - pad + 6, y + 20);
+
+      ctx.fillStyle = '#7eb8ff';
+      ctx.textAlign = 'right';
+      ctx.fillText('ניקוד:', x + panW - pad, y + 38);
+      ctx.fillStyle = '#ffd700';
+      ctx.textAlign = 'left';
+      ctx.fillText(String(state.score).padStart(5, '0'), x + panW - pad + 6, y + 38);
+
+      // Wave label
+      ctx.fillStyle   = '#aaddff';
+      ctx.font        = '11px Arial Hebrew, Arial';
+      ctx.textAlign   = 'left';
+      ctx.fillText(`גל: ${state.wave}  |  ניקוד: ${String(state.score).padStart(5, '0')}`, x + pad, y + 30);
+    }
+
+    function drawTopRightHUD(W) {
+      const panW = 180;
+      const panH = 52;
+      const pad  = 14;
+      const x    = W - panW - pad;
+      const y    = pad;
+
+      drawPanel(x, y, panW, panH, 'rgba(0,8,20,0.82)', '#0d3a6e');
+
+      // "אנרגיה" label
+      ctx.fillStyle   = '#7eb8ff';
+      ctx.font        = 'bold 12px Arial Hebrew, Arial';
+      ctx.textAlign   = 'right';
+      ctx.fillText(`אנרגיה: ${state.energy}/${state.maxEnergy}`, x + panW - pad, y + 18);
+
+      // Energy bar
+      const barX  = x + pad;
+      const barY  = y + 26;
+      const barW  = panW - pad * 2;
+      const barH  = 14;
+      const ratio = state.energy / state.maxEnergy;
+
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      ctx.fillRect(barX, barY, barW, barH);
+
+      // Segmented fill
+      const segs = state.maxEnergy;
+      const segW = (barW - segs + 1) / segs;
+      for (let i = 0; i < segs; i++) {
+        const filled = i < state.energy;
+        const hue    = filled ? (120 * ratio) : 0; // green→red as energy drops
+        ctx.fillStyle = filled
+          ? `hsl(${200 + 60 * ratio}, 80%, ${50 + 20 * ratio}%)`
+          : 'rgba(255,255,255,0.06)';
+        ctx.fillRect(barX + i * (segW + 1), barY + 2, segW, barH - 4);
+      }
+
+      ctx.strokeStyle = '#1a5a8a';
+      ctx.lineWidth   = 1;
+      ctx.strokeRect(barX, barY, barW, barH);
+    }
+
+    function drawPanel(x, y, w, h, fill, stroke) {
+      ctx.save();
+      ctx.fillStyle   = fill;
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth   = 1.5;
+      ctx.beginPath();
+      ctx.roundRect(x, y, w, h, 6);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // ─── Main Render ─────────────────────────────────────────────────────────────
+    function render() {
+      const { width: W, height: H } = canvas;
+
+      // 1. Sky
+      drawSky();
+      drawStars(W, H);
+
+      // 2. Height zone guides
+      drawZones(W, H);
+
+      // 3. Ground
+      drawGround(W, H);
+
+      // 4. Cities
+      state.cities.forEach(c => drawCity(c));
+
+      // 5. Defence batteries
+      state.systems.forEach((sys, i) => {
+        drawSystem(sys, i === state.selectedSystem);
+      });
+      drawReloadBars(state.systems);
+
+      // 6. HUD overlays
+      drawTopLeftHUD();
+      drawTopRightHUD(W);
+
+      // 7. Selected system indicator (bottom center)
+      drawSelectedIndicator(W, H);
+    }
+
+    function drawSelectedIndicator(W, H) {
+      const sys = state.systems[state.selectedSystem];
+      if (!sys) return;
+
+      const text = `מערכת פעילה: ${sys.name}  |  עלות: ${sys.energyCost} ⚡  |  טעינה: ${sys.reloadTime}s`;
+      const panW  = 380;
+      const panH  = 28;
+      const x     = (W - panW) / 2;
+      const y     = H - GROUND_H - panH - 8;
+
+      drawPanel(x, y, panW, panH, 'rgba(0,5,15,0.78)', sys.color + '66');
+
+      ctx.fillStyle   = sys.color;
+      ctx.font        = 'bold 12px Arial Hebrew, Arial';
+      ctx.textAlign   = 'center';
+      ctx.fillText(text, W / 2, y + 18);
+    }
+
+    // ─── Input (Phase A — keyboard selection only) ───────────────────────────────
+    window.addEventListener('keydown', e => {
+      const idx = parseInt(e.key) - 1;
+      if (idx >= 0 && idx <= 3) {
+        state.selectedSystem = idx;
+        render();
+      }
+    });
+
+    // ─── Boot ────────────────────────────────────────────────────────────────────
+    init();
+    render();
+  </script>
+</body>
+</html>
