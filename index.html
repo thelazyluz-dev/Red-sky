@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>שומר שמיים</title>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+    }
+    #canvas-wrapper {
+      position: relative;
+      transform-origin: center center;
+    }
+    canvas {
+      display: block;
+      image-rendering: crisp-edges;
+    }
+  </style>
+</head>
+<body>
+<div id="canvas-wrapper">
+  <canvas id="gameCanvas" width="1280" height="720"></canvas>
+</div>
+
+<script>
+// ===== CONSTANTS =====
+const CANVAS_W = 1280;
+const CANVAS_H = 720;
+const GROUND_Y  = 620;
+
+const ZONES = {
+  HIGH: [60,  340],
+  MID:  [340, 540],
+  LOW:  [540, 620]
+};
+
+// ===== CANVAS SETUP =====
+const canvas  = document.getElementById('gameCanvas');
+const ctx     = canvas.getContext('2d');
+const wrapper = document.getElementById('canvas-wrapper');
+
+function applyScale() {
+  const scale = Math.min(window.innerWidth / CANVAS_W, window.innerHeight / CANVAS_H);
+  wrapper.style.transform = `scale(${scale})`;
+  wrapper.style.width  = CANVAS_W + 'px';
+  wrapper.style.height = CANVAS_H + 'px';
+}
+applyScale();
+window.addEventListener('resize', applyScale);
+
+// ===== STARS =====
+const stars = [];
+(function initStars() {
+  for (let i = 0; i < 150; i++) {
+    const twinkle = Math.random() < 0.30;
+    stars.push({
+      x:      Math.random() * CANVAS_W,
+      y:      Math.random() * (GROUND_Y - 60),  // stay in sky area
+      r:      0.5 + Math.random() * 1.0,
+      twinkle,
+      phase:  Math.random() * Math.PI * 2,        // random start phase
+      period: 2000 + Math.random() * 2000,        // 2-4 s cycle
+      baseOp: 0.6 + Math.random() * 0.4
+    });
+  }
+})();
+
+// ===== CITIES =====
+// Seeded pseudo-random for building shapes (deterministic per city)
+function seededRand(seed) {
+  let s = seed;
+  return function() {
+    s = (s * 1664525 + 1013904223) & 0xffffffff;
+    return ((s >>> 0) / 0xffffffff);
+  };
+}
+
+function buildCityShape(city) {
+  const rng = seededRand(city.name.charCodeAt(0) * 7 + city.name.length * 31);
+  const buildings = [];
+  const count = 9 + Math.floor(rng() * 4);  // 9-12
+  let curX = city.x - city.width / 2;
+  const step = city.width / count;
+  for (let i = 0; i < count; i++) {
+    const bw = 14 + Math.floor(rng() * 12);
+    const bh = 40 + Math.floor(rng() * 50);
+    buildings.push({
+      x: curX + (step - bw) / 2,
+      y: GROUND_Y - bh,
+      w: bw,
+      h: bh
+    });
+    curX += step;
+  }
+  return buildings;
+}
+
+const CITIES = [
+  { name: '\u05ea\u05dc \u05d0\u05d1\u05d9\u05d1',  x: 160,  y: GROUND_Y, width: 140, hp: 5, maxHp: 5 },
+  { name: '\u05d9\u05e8\u05d5\u05e9\u05dc\u05d9\u05dd',  x: 560,  y: GROUND_Y, width: 140, hp: 5, maxHp: 5 },
+  { name: '\u05d7\u05d9\u05e4\u05d4',    x: 960,  y: GROUND_Y, width: 140, hp: 5, maxHp: 5 }
+];
+CITIES.forEach(c => { c.buildings = buildCityShape(c); });
+
+// ===== DEFENSE SYSTEMS =====
+const DEFENSE_SYSTEMS = [
+  {
+    id: 'iron_dome',
+    name: '\u05db\u05d9\u05e4\u05ea \u05d1\u05e8\u05d6\u05dc',
+    shortName: '\u05db"\u05d1',
+    x: 980, y: GROUND_Y,
+    color: '#00ff88',
+    reloadTime: 800,
+    energyCost: 1,
+    effectiveRange: 250,
+    effectiveZones: ['ZONE_LOW', 'ZONE_MID'],
+    key: '1'
+  },
+  {
+    id: 'david_sling',
+    name: '\u05e7\u05dc\u05e2 \u05d3\u05d5\u05d3',
+    shortName: '\u05e7"\u05d3',
+    x: 1050, y: GROUND_Y,
+    color: '#ffaa00',
+    reloadTime: 2000,
+    energyCost: 3,
+    effectiveRange: 380,
+    effectiveZones: ['ZONE_MID', 'ZONE_HIGH'],
+    key: '2'
+  },
+  {
+    id: 'arrow2',
+    name: '\u05d7\u05e5 2',
+    shortName: "\u05d7'2",
+    x: 1120, y: GROUND_Y,
+    color: '#4488ff',
+    reloadTime: 4000,
+    energyCost: 5,
+    effectiveRange: 520,
+    effectiveZones: ['ZONE_HIGH'],
+    key: '3'
+  },
+  {
+    id: 'arrow3',
+    name: '\u05d7\u05e5 3',
+    shortName: "\u05d7'3",
+    x: 1190, y: GROUND_Y,
+    color: '#cc44ff',
+    reloadTime: 6000,
+    energyCost: 8,
+    effectiveRange: 650,
+    effectiveZones: ['ZONE_HIGH', 'ZONE_MID', 'ZONE_LOW'],
+    key: '4'
+  }
+];
+
+// Selected system index for visual highlight
+let selectedSystem = 0;
+
+// ===== BACKGROUND GRADIENT =====
+function createBgGradient() {
+  const grad = ctx.createLinearGradient(0, 0, 0, CANVAS_H);
+  grad.addColorStop(0,          '#020818');
+  grad.addColorStop(300 / CANVAS_H, '#0a1628');
+  grad.addColorStop(600 / CANVAS_H, '#0d2040');
+  grad.addColorStop(GROUND_Y  / CANVAS_H, '#1a1a2e');
+  grad.addColorStop(1,          '#0f0f1a');
+  return grad;
+}
+
+// ===== RENDER FUNCTIONS =====
+
+function renderBackground(ts) {
+  const grad = createBgGradient();
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+}
+
+function renderStars(ts) {
+  stars.forEach(s => {
+    let alpha = s.baseOp;
+    if (s.twinkle) {
+      // oscillate between 0.3 and 1.0
+      alpha = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(s.phase + (ts / s.period) * Math.PI * 2));
+    }
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  });
+}
+
+function renderZoneLines() {
+  ctx.save();
+  ctx.setLineDash([8, 10]);
+  ctx.lineWidth = 1;
+
+  // MID/HIGH boundary at Y=340
+  ctx.strokeStyle = 'rgba(100, 180, 255, 0.15)';
+  ctx.beginPath();
+  ctx.moveTo(0, ZONES.HIGH[1]);
+  ctx.lineTo(CANVAS_W, ZONES.HIGH[1]);
+  ctx.stroke();
+
+  // LOW/MID boundary at Y=540
+  ctx.strokeStyle = 'rgba(100, 180, 255, 0.15)';
+  ctx.beginPath();
+  ctx.moveTo(0, ZONES.MID[1]);
+  ctx.lineTo(CANVAS_W, ZONES.MID[1]);
+  ctx.stroke();
+
+  ctx.setLineDash([]);
+
+  // Zone labels (very subtle)
+  ctx.font = '11px Orbitron';
+  ctx.fillStyle = 'rgba(100, 180, 255, 0.20)';
+  ctx.textAlign = 'left';
+  ctx.fillText('\u05d2\u05d5\u05d1\u05d4 \u05d1\u05dc\u05d9\u05e1\u05d8\u05d9 \u2014 \u05d7\u05e5 2 / \u05d7\u05e5 3', 14, ZONES.HIGH[0] + 22);
+  ctx.fillText('\u05d2\u05d5\u05d1\u05d4 \u05d1\u05d9\u05e0\u05d5\u05e0\u05d9 \u2014 \u05e7\u05dc\u05e2 \u05d3\u05d5\u05d3', 14, ZONES.MID[0] + 22);
+  ctx.fillText('\u05d2\u05d5\u05d1\u05d4 \u05e0\u05de\u05d5\u05da \u2014 \u05db\u05d9\u05e4\u05ea \u05d1\u05e8\u05d6\u05dc', 14, ZONES.LOW[0] + 22);
+
+  ctx.restore();
+}
+
+function renderGround() {
+  ctx.save();
+  // Ground fill
+  const ggrad = ctx.createLinearGradient(0, GROUND_Y, 0, CANVAS_H);
+  ggrad.addColorStop(0, '#1a1a2e');
+  ggrad.addColorStop(1, '#0f0f1a');
+  ctx.fillStyle = ggrad;
+  ctx.fillRect(0, GROUND_Y, CANVAS_W, CANVAS_H - GROUND_Y);
+
+  // Horizon line
+  ctx.strokeStyle = '#2a3a5c';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(0, GROUND_Y);
+  ctx.lineTo(CANVAS_W, GROUND_Y);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function renderCities() {
+  CITIES.forEach(city => {
+    const rng = seededRand(city.name.charCodeAt(0) * 13 + 99);
+
+    // Draw buildings
+    city.buildings.forEach(b => {
+      // Building silhouette
+      ctx.save();
+      ctx.fillStyle = '#1e2a4a';
+      ctx.fillRect(b.x, b.y, b.w, b.h);
+
+      // Subtle building edge
+      ctx.strokeStyle = '#2a3a60';
+      ctx.lineWidth = 0.5;
+      ctx.strokeRect(b.x, b.y, b.w, b.h);
+
+      // Windows
+      const winCols = Math.floor(b.w / 8);
+      const winRows = Math.floor(b.h / 10);
+      for (let row = 0; row < winRows; row++) {
+        for (let col = 0; col < winCols; col++) {
+          const wx = b.x + 3 + col * 8;
+          const wy = b.y + 4 + row * 10;
+          if (wx + 3 > b.x + b.w - 2) continue;
+          const lit = rng() > 0.35;
+          if (lit) {
+            ctx.fillStyle = rng() > 0.5
+              ? 'rgba(255, 220, 100, 0.8)'
+              : 'rgba(200, 230, 255, 0.6)';
+            ctx.fillRect(wx, wy, 3, 3);
+          }
+        }
+      }
+      ctx.restore();
+    });
+
+    // City name label
+    ctx.save();
+    ctx.font = 'bold 12px Orbitron';
+    ctx.fillStyle = 'rgba(150, 200, 255, 0.7)';
+    ctx.textAlign = 'center';
+    ctx.fillText(city.name, city.x, GROUND_Y + 14);
+    ctx.restore();
+
+    // HP hearts above city
+    renderCityHP(city);
+  });
+}
+
+function renderCityHP(city) {
+  ctx.save();
+  const heartSize = 14;
+  const spacing   = 18;
+  const totalW    = city.maxHp * spacing - (spacing - heartSize);
+  const startX    = city.x - totalW / 2;
+  const hpY       = city.buildings.reduce((min, b) => Math.min(min, b.y), GROUND_Y) - 20;
+
+  for (let i = 0; i < city.maxHp; i++) {
+    const hx = startX + i * spacing;
+    const hy = hpY;
+    if (i < city.hp) {
+      ctx.fillStyle = '#ff4466';
+    } else {
+      ctx.fillStyle = 'rgba(80, 30, 40, 0.5)';
+    }
+    // Draw heart using path
+    ctx.beginPath();
+    const s = heartSize / 2;
+    ctx.moveTo(hx + s, hy + s * 0.7);
+    ctx.bezierCurveTo(hx + s, hy, hx, hy, hx, hy + s * 0.5);
+    ctx.bezierCurveTo(hx, hy + s, hx + s, hy + s * 1.5, hx + s, hy + s * 1.8);
+    ctx.bezierCurveTo(hx + s, hy + s * 1.5, hx + s * 2, hy + s, hx + s * 2, hy + s * 0.5);
+    ctx.bezierCurveTo(hx + s * 2, hy, hx + s, hy, hx + s, hy + s * 0.7);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function renderDefenseSystems() {
+  DEFENSE_SYSTEMS.forEach((sys, idx) => {
+    const isSelected = idx === selectedSystem;
+
+    ctx.save();
+
+    // Range circle (dashed)
+    ctx.save();
+    ctx.setLineDash([5, 7]);
+    ctx.lineWidth = isSelected ? 1.5 : 0.8;
+    ctx.strokeStyle = isSelected
+      ? sys.color + 'aa'
+      : sys.color + '33';
+    ctx.beginPath();
+    ctx.arc(sys.x, sys.y, sys.effectiveRange, Math.PI, 0); // upper half
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+
+    // Launcher base (rectangle)
+    const baseW = 32, baseH = 18;
+    ctx.fillStyle = isSelected
+      ? sys.color + 'cc'
+      : sys.color + '55';
+    ctx.strokeStyle = sys.color;
+    ctx.lineWidth = isSelected ? 2 : 1;
+    ctx.fillRect(sys.x - baseW / 2, sys.y - baseH, baseW, baseH);
+    ctx.strokeRect(sys.x - baseW / 2, sys.y - baseH, baseW, baseH);
+
+    // Launcher barrel (triangle pointing up)
+    ctx.fillStyle = sys.color;
+    ctx.beginPath();
+    ctx.moveTo(sys.x,      sys.y - baseH - 18);
+    ctx.lineTo(sys.x - 7,  sys.y - baseH);
+    ctx.lineTo(sys.x + 7,  sys.y - baseH);
+    ctx.closePath();
+    ctx.fill();
+
+    // Glow when selected
+    if (isSelected) {
+      ctx.shadowColor = sys.color;
+      ctx.shadowBlur  = 20;
+      ctx.fillStyle   = sys.color + '44';
+      ctx.beginPath();
+      ctx.arc(sys.x, sys.y - baseH - 5, 22, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    }
+
+    // System name label above launcher
+    ctx.font = isSelected ? 'bold 11px Orbitron' : '10px Orbitron';
+    ctx.fillStyle = isSelected ? sys.color : sys.color + 'aa';
+    ctx.textAlign = 'center';
+    ctx.shadowColor = sys.color;
+    ctx.shadowBlur  = isSelected ? 8 : 0;
+    ctx.fillText(sys.name, sys.x, sys.y - baseH - 26);
+    ctx.shadowBlur = 0;
+
+    // Key hint
+    ctx.font = '9px Orbitron';
+    ctx.fillStyle = 'rgba(200,200,200,0.5)';
+    ctx.fillText('[' + sys.key + ']', sys.x, sys.y - baseH - 14);
+
+    ctx.restore();
+  });
+}
+
+function renderHUD() {
+  // Top HUD bar
+  ctx.save();
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.72)';
+  ctx.fillRect(0, 0, CANVAS_W, 58);
+
+  // Bottom border of HUD
+  ctx.strokeStyle = 'rgba(0, 200, 255, 0.3)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, 58);
+  ctx.lineTo(CANVAS_W, 58);
+  ctx.stroke();
+
+  // Wave info (right side - RTL)
+  ctx.font = 'bold 22px Orbitron';
+  ctx.fillStyle = '#00ccff';
+  ctx.textAlign = 'right';
+  ctx.shadowColor = '#00ccff';
+  ctx.shadowBlur  = 10;
+  ctx.fillText('\u05d2\u05dc: 1 / 10', CANVAS_W - 20, 38);
+  ctx.shadowBlur = 0;
+
+  // Score
+  ctx.font = 'bold 22px Orbitron';
+  ctx.fillStyle = '#ffcc00';
+  ctx.textAlign = 'center';
+  ctx.shadowColor = '#ffcc00';
+  ctx.shadowBlur  = 8;
+  ctx.fillText('\u05e0\u05d9\u05e7\u05d5\u05d3: 0', CANVAS_W / 2 + 80, 38);
+  ctx.shadowBlur = 0;
+
+  // Energy bar
+  renderEnergyHUD();
+
+  ctx.restore();
+
+  // Bottom-right systems panel
+  renderSystemsPanel();
+}
+
+function renderEnergyHUD() {
+  const maxEnergy = 20;
+  const current   = 20; // static for now
+  const startX    = 30;
+  const startY    = 16;
+  const cellW     = 14;
+  const cellH     = 22;
+  const gap       = 3;
+  const cols      = 20;
+
+  // Label
+  ctx.font = '11px Orbitron';
+  ctx.fillStyle = '#00ccff';
+  ctx.textAlign = 'left';
+  ctx.fillText('\u26a1 \u05d0\u05e0\u05e8\u05d2\u05d9\u05d4', startX, startY + 10);
+
+  // Cells
+  for (let i = 0; i < cols; i++) {
+    const cx = startX + i * (cellW + gap);
+    const cy = startY + 16;
+    const filled = i < current;
+    ctx.fillStyle = filled ? '#00ff88' : 'rgba(0, 255, 136, 0.12)';
+    ctx.strokeStyle = filled ? '#00cc66' : 'rgba(0, 255, 136, 0.25)';
+    ctx.lineWidth = 1;
+    ctx.fillRect(cx, cy, cellW, cellH);
+    ctx.strokeRect(cx, cy, cellW, cellH);
+  }
+
+  // Numeric
+  ctx.font = '11px Orbitron';
+  ctx.fillStyle = '#00ff88';
+  ctx.textAlign = 'left';
+  ctx.fillText(current + ' / ' + maxEnergy, startX + cols * (cellW + gap) + 8, startY + 31);
+}
+
+function renderSystemsPanel() {
+  const panelW = 210;
+  const panelH = 170;
+  const px     = CANVAS_W - panelW - 10;
+  const py     = CANVAS_H - panelH - 10;
+
+  // Panel background
+  ctx.save();
+  ctx.fillStyle   = 'rgba(0, 10, 25, 0.82)';
+  ctx.strokeStyle = 'rgba(0, 200, 255, 0.3)';
+  ctx.lineWidth   = 1;
+  ctx.beginPath();
+  ctx.roundRect(px, py, panelW, panelH, 6);
+  ctx.fill();
+  ctx.stroke();
+
+  // Panel title
+  ctx.font      = 'bold 11px Orbitron';
+  ctx.fillStyle = 'rgba(0, 200, 255, 0.7)';
+  ctx.textAlign = 'center';
+  ctx.fillText('\u05de\u05e2\u05e8\u05db\u05d5\u05ea \u05d4\u05d2\u05e0\u05d4', px + panelW / 2, py + 16);
+
+  // Divider
+  ctx.strokeStyle = 'rgba(0, 200, 255, 0.2)';
+  ctx.beginPath();
+  ctx.moveTo(px + 8, py + 22);
+  ctx.lineTo(px + panelW - 8, py + 22);
+  ctx.stroke();
+
+  // Each system row
+  DEFENSE_SYSTEMS.forEach((sys, idx) => {
+    const rowY      = py + 32 + idx * 34;
+    const isSelected = idx === selectedSystem;
+
+    // Row highlight
+    if (isSelected) {
+      ctx.fillStyle = sys.color + '22';
+      ctx.beginPath();
+      ctx.roundRect(px + 4, rowY - 2, panelW - 8, 30, 4);
+      ctx.fill();
+      ctx.strokeStyle = sys.color + '55';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    // Key badge
+    ctx.fillStyle = isSelected ? sys.color : 'rgba(150,150,150,0.4)';
+    ctx.beginPath();
+    ctx.roundRect(px + 8, rowY + 4, 18, 18, 3);
+    ctx.fill();
+    ctx.font      = 'bold 10px Orbitron';
+    ctx.fillStyle = isSelected ? '#000' : '#888';
+    ctx.textAlign = 'center';
+    ctx.fillText(sys.key, px + 17, rowY + 16);
+
+    // System name
+    ctx.font      = isSelected ? 'bold 12px Orbitron' : '11px Orbitron';
+    ctx.fillStyle = isSelected ? sys.color : 'rgba(200, 200, 200, 0.7)';
+    ctx.textAlign = 'right';
+    ctx.fillText(sys.name, px + panelW - 8, rowY + 16);
+
+    // Reload bar (static full for now)
+    const barX = px + 30;
+    const barY = rowY + 22;
+    const barW = panelW - 38;
+    const barH = 4;
+    ctx.fillStyle = 'rgba(255,255,255,0.1)';
+    ctx.fillRect(barX, barY, barW, barH);
+    ctx.fillStyle = sys.color + 'cc';
+    ctx.fillRect(barX, barY, barW, barH);
+
+    // Reload label
+    ctx.font      = '8px Orbitron';
+    ctx.fillStyle = 'rgba(150,150,150,0.6)';
+    ctx.textAlign = 'left';
+    ctx.fillText('reload ' + (sys.reloadTime / 1000).toFixed(1) + 's  \u26a1' + sys.energyCost, barX, barY - 4);
+  });
+
+  ctx.restore();
+}
+
+// ===== MAIN RENDER LOOP =====
+function render(ts) {
+  renderBackground(ts);
+  renderStars(ts);
+  renderZoneLines();
+  renderGround();
+  renderCities();
+  renderDefenseSystems();
+  renderHUD();
+}
+
+// ===== KEY INPUT - system selection =====
+window.addEventListener('keydown', e => {
+  const idx = ['1','2','3','4'].indexOf(e.key);
+  if (idx !== -1) selectedSystem = idx;
+});
+
+// ===== ANIMATION LOOP =====
+function loop(ts) {
+  ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
+  render(ts);
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
